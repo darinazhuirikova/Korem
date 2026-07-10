@@ -28,13 +28,15 @@ import { Ionicons } from '@expo/vector-icons';
 
 import { transcribeAudio } from '../../lib/stt';
 import {
-  getDirections,
+  getDirectionsWithFallback,
   geocodeAddress,
   haversineM,
   decodePolyline,
   RouteStep,
   LatLng,
 } from '../../lib/directions';
+import { VisionBus } from '../../lib/visionBus';
+import { shouldAnnounceError } from '../../lib/errorHandler';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 const GOOGLE_KEY = process.env.EXPO_PUBLIC_GOOGLE_KEY ?? '';
@@ -179,6 +181,8 @@ export default function NavigationScreen() {
 
   const locationSubRef = useRef<Location.LocationSubscription | null>(null);
   const userLocationRef = useRef<LatLng | null>(null);
+  const isSpeakingRef  = useRef(false);
+  const lastGpsRef     = useRef(Date.now());
 
   // ── Load settings ──────────────────────────────────────────────────────────
   useEffect(() => {
@@ -209,6 +213,7 @@ export default function NavigationScreen() {
           const pos: LatLng = { lat: loc.coords.latitude, lng: loc.coords.longitude };
           setUserLocation(pos);
           userLocationRef.current = pos;
+          lastGpsRef.current = Date.now();
           postToMap({ type: 'loc', lat: pos.lat, lng: pos.lng });
           checkStepAdvance(pos);
         }
@@ -253,16 +258,56 @@ export default function NavigationScreen() {
     }
   }, [appLang, speechEnabled, speechRate]);
 
-  const speakStep = (step: RouteStep) => {
+  // Track speaking state so VisionBus alerts don't interrupt maneuver TTS
+  // ── Vision obstacle alerts during navigation ────────────────────────────────
+  useEffect(() => {
+    if (phase !== 'navigating') return;
+    const unsub = VisionBus.subscribe((alert) => {
+      if (alert.priority !== 'HIGH') return;
+      if (isSpeakingRef.current) return; // maneuver TTS in progress
+
+      // Suppress near waypoints (< 30 m) so turn instruction takes priority
+      const pos = userLocationRef.current;
+      const step = stepsRef.current[stepIdxRef.current];
+      if (pos && step && haversineM(pos, step.endLocation) < 30) return;
+
+      const name = appLang === 'ru' ? alert.label : alert.labelEn;
+      speakWithTracking(appLang === 'ru' ? `Внимание: ${name}` : `Warning: ${name}`);
+    });
+    return unsub;
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [phase, appLang, speechEnabled]);
+
+  // ── GPS loss detection during navigation ─────────────────────────────────────
+  useEffect(() => {
+    if (phase !== 'navigating') return;
+    const id = setInterval(() => {
+      if (Date.now() - lastGpsRef.current > 30_000) {
+        if (shouldAnnounceError('gps_lost')) {
+          speakWithTracking(appLang === 'ru' ? 'GPS сигнал потерян' : 'GPS signal lost');
+        }
+      }
+    }, 10_000);
+    return () => clearInterval(id);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [phase, appLang, speechEnabled]);
+
+  const speakWithTracking = (text: string) => {
     if (!speechEnabled) return;
+    isSpeakingRef.current = true;
     try {
       Speech.stop();
-      (Speech as any).speak(step.instruction, {
+      (Speech as any).speak(text, {
         language: appLang === 'ru' ? 'ru-RU' : 'en-US',
         rate: speechRate,
+        onDone:    () => { isSpeakingRef.current = false; },
+        onStopped: () => { isSpeakingRef.current = false; },
+        onError:   () => { isSpeakingRef.current = false; },
       });
-    } catch {}
+    } catch { isSpeakingRef.current = false; }
   };
+
+  const speakStep = (step: RouteStep) => speakWithTracking(step.instruction);
 
   // ── Build route ────────────────────────────────────────────────────────────
   const buildRoute = async (destText: string) => {
@@ -277,7 +322,7 @@ export default function NavigationScreen() {
     setPhase('loading');
     setDestination(destText);
     try {
-      const route = await getDirections(pos, destText, routeMode === 'accessible', appLang);
+      const route = await getDirectionsWithFallback(pos, destText, routeMode === 'accessible', appLang);
       setSteps(route.steps);
       setCurrentStepIdx(0);
       stepIdxRef.current = 0;
@@ -297,13 +342,16 @@ export default function NavigationScreen() {
       postToMap({ type: 'step', idx: 0 });
 
       setPhase('navigating');
+      // Announce ORS wheelchair routing when active
+      if (route.source === 'ors' && speechEnabled) {
+        setTimeout(() => speakWithTracking(appLang === 'ru' ? 'Маршрут для колясок' : 'Wheelchair route'), 300);
+      }
+
       // Speak first step
       if (route.steps.length > 0) speakStep(route.steps[0]);
 
       if (route.warnings.length > 0 && speechEnabled) {
-        setTimeout(() => {
-          (Speech as any).speak(route.warnings[0], { language: appLang === 'ru' ? 'ru-RU' : 'en-US' });
-        }, 3000);
+        setTimeout(() => speakWithTracking(route.warnings[0]), 3000);
       }
     } catch (e: any) {
       setPhase('idle');
@@ -365,7 +413,15 @@ export default function NavigationScreen() {
 
     setUploading(true);
     try {
-      const text = (await transcribeAudio(uri, appLang)).trim();
+      const onFallback = () => {
+        try {
+          (Speech as any).speak(
+            appLang === 'ru' ? 'Нет сети. Работаю офлайн.' : 'No network. Offline mode.',
+            { language: appLang === 'ru' ? 'ru-RU' : 'en-US' },
+          );
+        } catch {}
+      };
+      const text = (await transcribeAudio(uri, appLang, onFallback)).trim();
       if (text) {
         if (phase === 'navigating') {
           const t = text.toLowerCase();

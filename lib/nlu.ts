@@ -1,6 +1,7 @@
 // lib/nlu.ts
 // Универсальный NLU-классификатор интентов на RU/EN/KK через LLM.
 import { Perf } from './perf';
+import { withTimeout } from './errorHandler';
 // Возвращает JSON { intent, confidence, slots } и работает с локальным
 // фоллбеком, если сеть/ключ недоступны.
 
@@ -86,14 +87,17 @@ export async function classifyCommandLLM(text: string): Promise<NluResult> {
   } as const;
 
   try {
-    const resp = await fetch('https://api.openai.com/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${process.env.EXPO_PUBLIC_OPENAI_KEY ?? ''}`,
-      },
-      body: JSON.stringify(body),
-    });
+    const resp = await withTimeout(
+      fetch('https://api.openai.com/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${process.env.EXPO_PUBLIC_OPENAI_KEY ?? ''}`,
+        },
+        body: JSON.stringify(body),
+      }),
+      5_000,
+    );
 
     const data = await resp.json();
     const content = (data?.choices?.[0]?.message?.content || '{}').trim();

@@ -28,6 +28,8 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { initPidnet, runSegmentation, isPidnetReady, SegResult } from '../../lib/pidnet';
 import { initYolo, detectObjects, isYoloReady, Detection } from '../../lib/yolo';
 import { updateTracks, resetTracker, TrackedDetection } from '../../lib/tracker';
+import { fusePidnetYolo, FusedDetection } from '../../lib/fusion';
+import { VisionBus } from '../../lib/visionBus';
 import { Perf } from '../../lib/perf';
 import { recognizeText } from '../../lib/ocr';
 import { translateText, SupportedLang } from '../../lib/translate';
@@ -91,13 +93,14 @@ export default function CameraScreen() {
   const [busy, setBusy] = useState(false);
 
   // ── DETECT state ─────────────────────────────────────────────────────────
-  const [detections, setDetections] = useState<TrackedDetection[]>([]);
+  const [detections, setDetections] = useState<FusedDetection<TrackedDetection>[]>([]);
   const [segResult, setSegResult] = useState<SegResult | null>(null);
   const [frameW, setFrameW] = useState(1);
   const [frameH, setFrameH] = useState(1);
   const [yoloActive, setYoloActive]     = useState(false);
   const [pidnetActive, setPidnetActive] = useState(false);
   const [busText, setBusText] = useState('');
+  const [showDebug, setShowDebug] = useState(false);
 
   // ── OCR state ─────────────────────────────────────────────────────────────
   const [ocrText, setOcrText] = useState('');
@@ -115,10 +118,13 @@ export default function CameraScreen() {
   const [speechRate, setSpeechRate] = useState(1.0);
   const [warningMode, setWarningMode] = useState<'voice' | 'vibration' | 'none'>('voice');
 
-  const ttsLastRef    = useRef<Map<string, number>>(new Map());
-  const busOcrCoolRef = useRef(0);
-  const yoloBusyRef   = useRef(false);
-  const pidnetBusyRef = useRef(false);
+  const ttsLastRef       = useRef<Map<string, number>>(new Map());
+  const busOcrCoolRef    = useRef(0);
+  const yoloBusyRef      = useRef(false);
+  const pidnetBusyRef    = useRef(false);
+  const maskRef          = useRef<Int32Array | null>(null);
+  const maskTimestampRef = useRef(0);
+  const visionBusLastRef = useRef<Map<string, number>>(new Map());
 
   // ── Model init ────────────────────────────────────────────────────────────
   useEffect(() => {
@@ -269,8 +275,25 @@ export default function CameraScreen() {
       const tracked = updateTracks(rawDets);
       Perf.end('yolo_tracker', tTrack);
 
-      setDetections(tracked);
-      announceDetections(tracked);
+      // Fuse with latest PIDNet mask to compute surface-context priority
+      const tFuse = Perf.start();
+      const fused = fusePidnetYolo(maskRef.current, maskTimestampRef.current, tracked);
+      Perf.end('fusion', tFuse);
+
+      setDetections(fused);
+      announceDetections(fused);
+
+      // Emit HIGH-priority fused detections to navigation (4 s rate-limit per label)
+      const fusionNow = Date.now();
+      for (const fd of fused) {
+        if (fd.fusedPriority === 'HIGH') {
+          const lastEmit = visionBusLastRef.current.get(fd.labelEn) ?? 0;
+          if (fusionNow - lastEmit > 4_000) {
+            visionBusLastRef.current.set(fd.labelEn, fusionNow);
+            VisionBus.emit({ label: fd.label, labelEn: fd.labelEn, priority: 'HIGH', timestamp: fusionNow });
+          }
+        }
+      }
 
       // Bus number from YOLO bbox (classId 5 = bus in COCO)
       const bus = tracked.find(d => d.classId === 5 && d.confidence > 0.6);
@@ -303,6 +326,8 @@ export default function CameraScreen() {
 
       const result = await runSegmentation(photo.uri, appLang);
       if (result) {
+        maskRef.current = result.mask;
+        maskTimestampRef.current = Date.now();
         setSegResult(result);
         announceHazards(result.hazards);
 
@@ -492,6 +517,9 @@ export default function CameraScreen() {
         <View pointerEvents="none" style={StyleSheet.absoluteFill}>
           {detections.map((d, i) => {
             const isHigh = HIGH_PRIORITY_CLASSES.has(d.classId) || isHighPriByName(d.labelEn);
+            const debugBorderColor =
+              d.fusedPriority === 'HIGH'   ? '#ff0000' :
+              d.fusedPriority === 'MEDIUM' ? '#ff8800' : '#00ff00';
             return (
               <View
                 key={`det-${d.trackId ?? i}`}
@@ -503,14 +531,17 @@ export default function CameraScreen() {
                     width:  (d.x2 - d.x1) * frameW,
                     height: (d.y2 - d.y1) * frameH,
                   },
-                  isHigh ? styles.boxHigh : undefined,
-                  d.isMoving ? styles.boxMoving : undefined,
+                  showDebug
+                    ? { borderColor: debugBorderColor }
+                    : (isHigh ? styles.boxHigh : undefined),
+                  !showDebug && d.isMoving ? styles.boxMoving : undefined,
                 ]}
               >
                 <Text style={styles.boxLabel}>
                   {appLang === 'en' ? d.labelEn : d.label}{' '}
                   {(d.confidence * 100).toFixed(0)}%
                   {d.isMoving ? ' ▶' : ''}
+                  {showDebug ? ` [${d.fusedPriority}]` : ''}
                 </Text>
               </View>
             );
@@ -572,7 +603,12 @@ export default function CameraScreen() {
             <View style={styles.shutterOuter}>
               <View style={styles.shutterInner} />
             </View>
-            <View style={styles.sceneBtn} />
+            <TouchableOpacity
+              style={[styles.sceneBtn, showDebug && styles.sceneBtnDebug]}
+              onPress={() => setShowDebug(v => !v)}
+            >
+              <Ionicons name="bug-outline" size={24} color="#fff" />
+            </TouchableOpacity>
           </>
         ) : (
           <TouchableOpacity
@@ -677,6 +713,7 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(134,102,233,0.85)',
     alignItems: 'center', justifyContent: 'center',
   },
+  sceneBtnDebug: { backgroundColor: 'rgba(80,40,180,0.95)' },
   shutterOuter: {
     width: 72, height: 72, borderRadius: 36,
     backgroundColor: '#fff', alignItems: 'center', justifyContent: 'center',

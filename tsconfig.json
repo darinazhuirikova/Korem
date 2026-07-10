@@ -19,6 +19,7 @@
   ],
   "exclude": [
     "node_modules",
-    "capacitor.config.ts"
+    "capacitor.config.ts",
+    "**/__tests__/**"
   ]
 }

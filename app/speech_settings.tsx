@@ -179,7 +179,10 @@ export default function SpeechSettingsScreen() {
 
     setUploading(true);
     try {
-      const textRaw = await transcribeAudio(uri, uiLang);
+      const onFallback = () => {
+        if (speechEnabled) speakText(uiLang === 'ru' ? 'Нет сети. Работаю офлайн.' : 'No network. Offline mode.');
+      };
+      const textRaw = await transcribeAudio(uri, uiLang, onFallback);
       const t = (textRaw || '').toLowerCase().trim();
 
       // Глобальная навигация

@@ -123,7 +123,16 @@ export default function SettingsScreen() {
 
     setUploading(true);
     try {
-      const textRaw = await transcribeAudio(uri, appLang);
+      const onFallback = () => {
+        if (!speechEnabled) return;
+        try {
+          (Speech as any).speak(
+            appLang === 'ru' ? 'Нет сети. Работаю офлайн.' : 'No network. Offline mode.',
+            { language: appLang === 'ru' ? 'ru-RU' : 'en-US', rate: speechRate },
+          );
+        } catch {}
+      };
+      const textRaw = await transcribeAudio(uri, appLang, onFallback);
       const text = (textRaw || '').toLowerCase().trim();
 
       if (!voiceNavActive && hasActivationPhrase(text)) { setVoiceNavActive(true); await hapticEnabled(); return; }

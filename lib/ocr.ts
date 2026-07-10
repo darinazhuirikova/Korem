@@ -6,6 +6,7 @@
  */
 
 import { Perf } from './perf';
+import { withTimeout, withRetry } from './errorHandler';
 
 const VISION_KEY = process.env.EXPO_PUBLIC_GOOGLE_KEY ?? '';
 const VISION_URL = 'https://vision.googleapis.com/v1/images:annotate';
@@ -18,6 +19,7 @@ export type OcrResult = {
 
 /** Pass a base64-encoded JPEG/PNG image (no data-URI prefix). */
 export async function recognizeText(base64Image: string): Promise<OcrResult> {
+  return withRetry(async () => {
   const tOcr = Perf.start();
   const body = {
     requests: [
@@ -29,11 +31,14 @@ export async function recognizeText(base64Image: string): Promise<OcrResult> {
     ],
   };
 
-  const res = await fetch(`${VISION_URL}?key=${VISION_KEY}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
+  const res = await withTimeout(
+    fetch(`${VISION_URL}?key=${VISION_KEY}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }),
+    10_000,
+  );
 
   Perf.end('ocr_rtt', tOcr);
   if (!res.ok) throw new Error(`Vision API HTTP ${res.status}`);
@@ -64,4 +69,5 @@ export async function recognizeText(base64Image: string): Promise<OcrResult> {
   }
 
   return { text: fullText.trim(), locale, words };
+  }, 1, 1_000);
 }

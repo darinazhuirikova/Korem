@@ -138,8 +138,11 @@ async function transcribeOffline(
 /**
  * Transcribe audio — drop-in replacement for transcribeWithOpenAI.
  *
- * @param uri   Audio file URI (.m4a produced by expo-av)
- * @param lang  App language, used as hint for local model
+ * @param uri        Audio file URI (.m4a produced by expo-av)
+ * @param lang       App language, used as hint for local model
+ * @param onFallback Called synchronously before local inference begins,
+ *                   when the cloud path was skipped or timed out.
+ *                   Use it to announce degraded-mode to the user via TTS.
  *
  * @throws Error('WHISPER_NOT_DOWNLOADED')
  *         when offline and ggml-base.bin is not present.
@@ -148,6 +151,7 @@ async function transcribeOffline(
 export async function transcribeAudio(
   uri: string,
   lang: 'ru' | 'en' | 'kk' = 'ru',
+  onFallback?: () => void,
 ): Promise<string> {
   const tLocal = Perf.start();
 
@@ -183,6 +187,7 @@ export async function transcribeAudio(
 
   // ── 3. Local fallback ───────────────────────────────────────────────────
   Perf.record('stt_path_chosen', 1); // 1 = local
+  onFallback?.();
   const text = await transcribeOffline(uri, lang);
   Perf.end('stt_local_total', tLocal);
   return text;

@@ -459,7 +459,16 @@ export default function MainScreen() {
     setUploading(true);
     const tVoice = Perf.start(); // voice pipeline: end-of-audio → TTS start
     try {
-      const textRaw = await transcribeAudio(uri, currentLanguage);
+      const onFallback = () => {
+        if (!speechEnabled) return;
+        try {
+          (Speech as any).speak(
+            currentLanguage === 'ru' ? 'Нет сети. Работаю офлайн.' : 'No network. Offline mode.',
+            { language: currentLanguage === 'ru' ? 'ru-RU' : 'en-US', rate: speechRate },
+          );
+        } catch {}
+      };
+      const textRaw = await transcribeAudio(uri, currentLanguage, onFallback);
       const recognizedText = (textRaw || '').toLowerCase().trim();
 
       // Активационная фраза: включаем режим и ждём следующую короткую команду

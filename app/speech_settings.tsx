@@ -7,7 +7,8 @@ import { Audio } from 'expo-av';
 import * as FileSystem from 'expo-file-system';
 import * as Haptics from 'expo-haptics';
 import * as Speech from 'expo-speech';
-import { transcribeWithOpenAI } from '../lib/transcribe';
+import { transcribeAudio, isWhisperModelReady, downloadWhisperModel } from '../lib/stt';
+import type { DownloadProgress } from '../lib/stt';
 
 export const options = { headerShown: false, tabBarStyle: { display: 'none' } };
 
@@ -27,6 +28,11 @@ export default function SpeechSettingsScreen() {
   const [speechEnabled, setSpeechEnabled] = useState(false);
   const router = useRouter();
 
+  type ModelStatus = 'checking' | 'not_downloaded' | 'downloading' | 'ready' | 'error';
+  const [modelStatus, setModelStatus] = useState<ModelStatus>('checking');
+  const [dlFraction, setDlFraction] = useState(0);
+  const announcedRef = useRef<Set<number>>(new Set());
+
   const [listening, setListening] = useState(false);
   const [uploading, setUploading] = useState(false);
 
@@ -34,6 +40,35 @@ export default function SpeechSettingsScreen() {
   const recRef = useRef<Audio.Recording | null>(null);
   const holdTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastSpokenStepRef = useRef<1 | 2 | 3 | null>(null);
+
+  useEffect(() => {
+    isWhisperModelReady().then((ready) =>
+      setModelStatus(ready ? 'ready' : 'not_downloaded')
+    );
+  }, []);
+
+  const handleDownloadModel = async () => {
+    if (modelStatus === 'downloading' || modelStatus === 'ready') return;
+    setModelStatus('downloading');
+    setDlFraction(0);
+    announcedRef.current.clear();
+    try {
+      if (speechEnabled) await speakText(uiLang === 'ru' ? 'Загружаю офлайн-распознавание' : 'Downloading offline model');
+      await downloadWhisperModel((p: DownloadProgress) => {
+        setDlFraction(p.fraction);
+        // Announce at 25 / 50 / 75 %
+        const milestone = Math.floor(p.fraction * 4) * 25;
+        if (milestone > 0 && !announcedRef.current.has(milestone)) {
+          announcedRef.current.add(milestone);
+          if (speechEnabled) speakText(`${milestone}%`);
+        }
+      });
+      setModelStatus('ready');
+      if (speechEnabled) await speakText(uiLang === 'ru' ? 'Офлайн-распознавание готово' : 'Offline model ready');
+    } catch {
+      setModelStatus('error');
+    }
+  };
 
   useEffect(() => {
     (async () => {
@@ -144,7 +179,7 @@ export default function SpeechSettingsScreen() {
 
     setUploading(true);
     try {
-      const textRaw = await transcribeWithOpenAI(uri);
+      const textRaw = await transcribeAudio(uri, uiLang);
       const t = (textRaw || '').toLowerCase().trim();
 
       // Глобальная навигация
@@ -175,6 +210,41 @@ export default function SpeechSettingsScreen() {
     } finally { setUploading(false); }
   };
 
+  // ===== Офлайн-распознавание (карточка, видна на всех шагах) =====
+  const renderModelCard = () => {
+    if (modelStatus === 'checking') return null;
+    const labelReady = uiLang === 'ru' ? '✓ Офлайн готово' : '✓ Offline ready';
+    const labelNotDl = uiLang === 'ru' ? 'Скачать офлайн (~142 МБ)' : 'Download offline (~142 MB)';
+    const labelDl    = uiLang === 'ru' ? `Загрузка… ${Math.round(dlFraction * 100)}%` : `Downloading… ${Math.round(dlFraction * 100)}%`;
+    const labelErr   = uiLang === 'ru' ? 'Ошибка — повторить' : 'Error — retry';
+
+    const label =
+      modelStatus === 'ready'       ? labelReady :
+      modelStatus === 'downloading' ? labelDl    :
+      modelStatus === 'error'       ? labelErr   : labelNotDl;
+
+    return (
+      <View style={styles.modelCard}>
+        <TouchableOpacity
+          onPress={handleDownloadModel}
+          disabled={modelStatus === 'downloading' || modelStatus === 'ready'}
+          activeOpacity={0.75}
+        >
+          <Text style={[
+            styles.modelCardText,
+            modelStatus === 'ready' && styles.modelCardTextReady,
+            modelStatus === 'error' && styles.modelCardTextError,
+          ]}>{label}</Text>
+          {modelStatus === 'downloading' && (
+            <View style={styles.progressBar}>
+              <View style={[styles.progressFill, { width: `${Math.round(dlFraction * 100)}%` as any }]} />
+            </View>
+          )}
+        </TouchableOpacity>
+      </View>
+    );
+  };
+
   // ===== Интерфейс =====
   if (step === 1) {
     return (
@@ -192,6 +262,7 @@ export default function SpeechSettingsScreen() {
           <TouchableOpacity style={styles.btn} onPress={() => handleSpeechEnable(true)}><Text style={styles.btnText}>{uiLang === 'ru' ? 'Да' : 'Yes'}</Text></TouchableOpacity>
           <TouchableOpacity style={styles.btn} onPress={() => handleSpeechEnable(false)}><Text style={styles.btnText}>{uiLang === 'ru' ? 'Нет' : 'No'}</Text></TouchableOpacity>
         </View>
+        {renderModelCard()}
       </View>
     );
   }
@@ -211,6 +282,7 @@ export default function SpeechSettingsScreen() {
         <TouchableOpacity style={styles.bigBtn} onPress={() => handleSpeed('fast')}><Text style={styles.bigBtnText}>{uiLang === 'ru' ? 'а) быстрая' : 'a) fast'}</Text></TouchableOpacity>
         <TouchableOpacity style={styles.bigBtn} onPress={() => handleSpeed('medium')}><Text style={styles.bigBtnText}>{uiLang === 'ru' ? 'б) средняя' : 'b) medium'}</Text></TouchableOpacity>
         <TouchableOpacity style={styles.bigBtn} onPress={() => handleSpeed('slow')}><Text style={styles.bigBtnText}>{uiLang === 'ru' ? 'в) медленная' : 'c) slow'}</Text></TouchableOpacity>
+        {renderModelCard()}
       </View>
     );
   }
@@ -225,10 +297,11 @@ export default function SpeechSettingsScreen() {
       </View>
 
       <Image source={warnIcon} style={styles.icon} />
-      <Text style={styles.title}>{uiLang === 'ru' ? 'Какой способ предупреждения\н о препятствиях вам удобнее?' : 'How to warn about obstacles?'}</Text>
+      <Text style={styles.title}>{uiLang === 'ru' ? 'Какой способ предупреждения\nо препятствиях вам удобнее?' : 'How to warn about obstacles?'}</Text>
       <TouchableOpacity style={styles.bigBtn} onPress={() => handleWarning('voice')}><Text style={styles.bigBtnText}>{uiLang === 'ru' ? 'а) голос' : 'a) voice'}</Text></TouchableOpacity>
       <TouchableOpacity style={styles.bigBtn} onPress={() => handleWarning('vibration')}><Text style={styles.bigBtnText}>{uiLang === 'ru' ? 'б) вибрация' : 'b) vibration'}</Text></TouchableOpacity>
       <TouchableOpacity style={styles.bigBtn} onPress={() => handleWarning('none')}><Text style={styles.bigBtnText}>{uiLang === 'ru' ? 'в) ничего' : 'c) none'}</Text></TouchableOpacity>
+      {renderModelCard()}
     </View>
   );
 }
@@ -249,4 +322,15 @@ const styles = StyleSheet.create({
   btnText: { color: '#fff', fontSize: 22, fontWeight: 'bold' },
   bigBtn: { width: '100%', backgroundColor: '#393B53', borderRadius: 14, alignItems: 'flex-start', paddingVertical: 24, paddingLeft: 34, marginVertical: 10 },
   bigBtnText: { color: '#fff', fontSize: 26, fontWeight: 'bold', textAlign: 'left' },
+
+  modelCard: {
+    position: 'absolute', bottom: 28, left: 20, right: 20,
+    backgroundColor: 'rgba(57,59,83,0.92)', borderRadius: 14, padding: 14,
+    borderWidth: 1, borderColor: 'rgba(134,102,233,0.3)',
+  },
+  modelCardText: { color: '#ccc', fontSize: 15, textAlign: 'center' },
+  modelCardTextReady: { color: '#3cce6a' },
+  modelCardTextError: { color: '#ff6b6b' },
+  progressBar: { height: 4, backgroundColor: '#2a2c40', borderRadius: 2, marginTop: 8, overflow: 'hidden' },
+  progressFill: { height: 4, backgroundColor: '#8666E9', borderRadius: 2 },
 });

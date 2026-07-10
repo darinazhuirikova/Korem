@@ -7,7 +7,7 @@ import { Audio } from 'expo-av';
 import * as FileSystem from 'expo-file-system';
 import * as Haptics from 'expo-haptics';
 import * as Speech from 'expo-speech';
-import { transcribeWithOpenAI } from '../lib/transcribe';
+import { transcribeAudio } from '../lib/stt';
 
 const micImg = require('../assets/images/mic_icon.png');
 
@@ -19,7 +19,7 @@ const ROUTES: Record<'language' | 'speech' | 'input' | 'support', Href> = {
   language: '/language-settings',
   speech: '/speech_settings',
   input: '/input_settings',
-  support: '/support',
+  support: '/(tabs)/info',
 };
 
 const SYNONYMS: Record<'language' | 'speech' | 'input' | 'support' | 'back', { ru: string[]; en: string[] }> = {
@@ -123,7 +123,7 @@ export default function SettingsScreen() {
 
     setUploading(true);
     try {
-      const textRaw = await transcribeWithOpenAI(uri);
+      const textRaw = await transcribeAudio(uri, appLang);
       const text = (textRaw || '').toLowerCase().trim();
 
       if (!voiceNavActive && hasActivationPhrase(text)) { setVoiceNavActive(true); await hapticEnabled(); return; }

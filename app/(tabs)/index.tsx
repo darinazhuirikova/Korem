@@ -12,10 +12,11 @@ import { useRouter, useNavigation, Href } from 'expo-router';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Audio } from 'expo-av';
 import * as FileSystem from 'expo-file-system';
-import { transcribeWithOpenAI } from '../../lib/transcribe';
+import { transcribeAudio } from '../../lib/stt';
 import * as Speech from 'expo-speech';
 import * as Haptics from 'expo-haptics';
 import { classifyCommandLLM, MIN_CONF } from '../../lib/nlu';
+import { Perf } from '../../lib/perf';
 
 /** ======== Параметры записи/навигации ======== */
 const MIN_DURATION_MS = 700; // минимальная длительность записи
@@ -186,7 +187,7 @@ function compoundScreenFromText(text: string): string | null {
 }
 
 /** Резервный словарь по синонимам */
-function localScreenFromText(text: string, lang: 'ru' | 'en'): string | null {
+function localScreenFromText(text: string, lang: 'ru' | 'en' | 'kk'): string | null {
   const t = text.toLowerCase();
   for (const key of Object.keys(SCREEN_SYNONYMS)) {
     for (const syn of (SCREEN_SYNONYMS as any)[key][lang]) {
@@ -221,7 +222,7 @@ export default function MainScreen() {
   const router = useRouter();
   const navigation = useNavigation();
 
-  const [currentLanguage, setCurrentLanguage] = useState<'ru' | 'en'>('ru');
+  const [currentLanguage, setCurrentLanguage] = useState<'ru' | 'en' | 'kk'>('ru');
   const [listening, setListening] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [voiceNavActive, setVoiceNavActive] = useState(false);
@@ -351,8 +352,8 @@ export default function MainScreen() {
             await AsyncStorage.setItem('language', lang);
             setCurrentLanguage(lang);
           } else if (lang === 'kk') {
-            await AsyncStorage.setItem('language', 'ru');
-            setCurrentLanguage('ru');
+            await AsyncStorage.setItem('language', 'kk');
+            setCurrentLanguage('kk');
           }
           return true;
         }
@@ -456,8 +457,9 @@ export default function MainScreen() {
     }
 
     setUploading(true);
+    const tVoice = Perf.start(); // voice pipeline: end-of-audio → TTS start
     try {
-      const textRaw = await transcribeWithOpenAI(uri);
+      const textRaw = await transcribeAudio(uri, currentLanguage);
       const recognizedText = (textRaw || '').toLowerCase().trim();
 
       // Активационная фраза: включаем режим и ждём следующую короткую команду
@@ -481,6 +483,7 @@ export default function MainScreen() {
 
       if (screen && SCREEN_TO_ROUTE[screen]) {
         try {
+          Perf.end('voice_pipeline_rtt', tVoice);
           await speakUiOpen(screen);
           // после навигации сбрасываем режим
           setVoiceNavActive(false);
@@ -498,8 +501,17 @@ export default function MainScreen() {
           : 'Say e.g. "language settings".'
       );
     } catch (e: any) {
-      console.warn('Transcribe error', e);
-      Alert.alert('Transcribe', e?.message ?? String(e));
+      if (e?.message === 'WHISPER_NOT_DOWNLOADED') {
+        Alert.alert(
+          currentLanguage === 'ru' ? 'Нет сети' : 'No network',
+          currentLanguage === 'ru'
+            ? 'Нет сети и офлайн-распознавание не загружено. Скачайте его в «Настройках озвучки».'
+            : 'No network and offline model not downloaded. Download it in Speech Settings.'
+        );
+      } else {
+        console.warn('Transcribe error', e);
+        Alert.alert('Transcribe', e?.message ?? String(e));
+      }
     } finally {
       setUploading(false);
     }
@@ -515,7 +527,7 @@ export default function MainScreen() {
         <TouchableOpacity style={styles.cardBtn} onPress={() => router.push('/camera')}>
           <Image source={require('../../assets/images/camera_card.png')} style={styles.cardImg} />
         </TouchableOpacity>
-        <TouchableOpacity style={styles.cardBtn} onPress={() => Alert.alert('Навигация', 'Функция навигации будет добавлена')}>
+        <TouchableOpacity style={styles.cardBtn} onPress={() => router.push('/(tabs)/navigation')}>
           <Image source={require('../../assets/images/navigation_card.png')} style={styles.cardImg} />
         </TouchableOpacity>
       </View>

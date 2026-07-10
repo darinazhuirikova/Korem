@@ -39,10 +39,35 @@ yarn-error.*
 app-example
 android
 ios
-android
-ios
 node_modules/
 .expo/
 .expo-shared/
 .vscode/
 .env*
+
+# ML training artifacts — large binaries not needed for the app build
+*.pt
+*.onnx
+*.npy
+
+# Capacitor config (wrong framework, not used)
+capacitor.config.ts
+
+# Empty temp files
+1.17
+
+# Benchmark generated outputs (keep scripts)
+korem_bench/results/
+korem_bench/runs/
+
+# Whisper offline model downloaded at runtime (~142 MB, not in repo)
+**/whisper/ggml-*.bin
+
+# TFLite export working directories (build artifacts, not source)
+yolov8n_saved_model/
+
+# PIDNet training repo clone (large, cloned from GitHub)
+scripts/PIDNet/
+
+# Claude Code internal directory (session memory, not project code)
+.claude/

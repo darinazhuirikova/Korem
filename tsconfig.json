@@ -5,6 +5,9 @@
     "paths": {
       "@/*": [
         "./*"
+      ],
+      "whisper.rn": [
+        "./node_modules/whisper.rn/src/index"
       ]
     }
   },
@@ -13,5 +16,9 @@
     "**/*.tsx",
     ".expo/types/**/*.ts",
     "expo-env.d.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    "capacitor.config.ts"
   ]
 }

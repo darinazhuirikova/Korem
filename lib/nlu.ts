@@ -1,5 +1,6 @@
 // lib/nlu.ts
 // Универсальный NLU-классификатор интентов на RU/EN/KK через LLM.
+import { Perf } from './perf';
 // Возвращает JSON { intent, confidence, slots } и работает с локальным
 // фоллбеком, если сеть/ключ недоступны.
 
@@ -74,6 +75,7 @@ function localFallback(textRaw: string): NluResult {
 }
 
 export async function classifyCommandLLM(text: string): Promise<NluResult> {
+  const tNlu = Perf.start();
   const body = {
     model: 'gpt-4o-mini',
     messages: [
@@ -88,7 +90,7 @@ export async function classifyCommandLLM(text: string): Promise<NluResult> {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${process.env.OPENAI_API_KEY ?? ''}`,
+        'Authorization': `Bearer ${process.env.EXPO_PUBLIC_OPENAI_KEY ?? ''}`,
       },
       body: JSON.stringify(body),
     });
@@ -104,9 +106,12 @@ export async function classifyCommandLLM(text: string): Promise<NluResult> {
 
     // простая валидация
     if (!result.intent) return localFallback(text);
+    Perf.end('nlu_cloud_rtt', tNlu);
     return result;
   } catch (e) {
     // сеть/ключ/парсинг — используем локальный фоллбек
-    return localFallback(text);
+    const fb = localFallback(text);
+    Perf.end('nlu_fallback', tNlu);
+    return fb;
   }
 }
